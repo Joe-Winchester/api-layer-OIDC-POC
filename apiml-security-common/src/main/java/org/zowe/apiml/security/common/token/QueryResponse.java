@@ -47,7 +47,8 @@ public class QueryResponse implements EntryExpiration {
     }
 
     /**
-     * An enumeration defines all possible sources of JWT token using to user authentication into Gateway, Discovery
+     * An enumeration defines all possible sources of JWT token using to user
+     * authentication into Gateway, Discovery
      * service and catalog.
      */
     public enum Source {
@@ -60,6 +61,7 @@ public class QueryResponse implements EntryExpiration {
         ZOWE_PAT("APIML_PAT"),
 
         OIDC("OIDC");
+
         public final String value;
 
         Source(String value) {
@@ -82,7 +84,7 @@ public class QueryResponse implements EntryExpiration {
             if (StringUtils.equalsIgnoreCase(issuer, ZOWE_PAT.value)) {
                 return ZOWE_PAT;
             }
-            if (UrlUtils.isValidUrl(issuer)) {
+            if (UrlUtils.isValidUrl(issuer) || StringUtils.equalsIgnoreCase(issuer, "KNOXSSO")) {
                 return OIDC;
             }
             throw new TokenNotValidException("Unknown token issued by: " + issuer);
