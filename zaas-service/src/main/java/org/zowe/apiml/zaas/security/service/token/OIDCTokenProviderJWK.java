@@ -10,7 +10,6 @@
 
 package org.zowe.apiml.zaas.security.service.token;
 
-
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jose.jwk.JWKSet;
@@ -41,9 +40,16 @@ import org.zowe.apiml.security.common.token.OIDCProvider;
 
 import java.io.IOException;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.security.Key;
+import java.security.KeyFactory;
 import java.security.PublicKey;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.X509EncodedKeySpec;
 import java.text.ParseException;
+import java.util.Base64;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -73,6 +79,13 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
 
     @Qualifier("oidcJwtClock")
     private final Clock clock;
+
+    @Value("${apiml.security.oidc.jwks.bypass:false}")
+    Boolean jwksBypass;
+
+    @Value("${apiml.security.oidc.jwks.publicKeyUrl}")
+    String jwksPublicKeyURL;
+
     private final DefaultResourceRetriever resourceRetriever;
 
     @Getter
@@ -84,7 +97,7 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
     public void afterPropertiesSet() {
         this.fetchJWKSet();
         Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "OIDC JWK Refresh"))
-            .scheduleAtFixedRate(this::fetchJWKSet, jwkRefreshInterval, jwkRefreshInterval, TimeUnit.HOURS);
+                .scheduleAtFixedRate(this::fetchJWKSet, jwkRefreshInterval, jwkRefreshInterval, TimeUnit.HOURS);
     }
 
     @Retryable
@@ -108,19 +121,20 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
 
     private Map<String, PublicKey> processKeys(JWKSet jwkKeys) {
         return jwkKeys.getKeys().stream()
-            .filter(jwkKey -> {
-                KeyUse keyUse = jwkKey.getKeyUse();
-                KeyType keyType = jwkKey.getKeyType();
-                return keyUse != null && keyType != null && "sig".equals(keyUse.getValue()) && "RSA".equals(keyType.getValue());
-            })
-            .collect(Collectors.toMap(JWK::getKeyID, jwkKey -> {
-                try {
-                    return jwkKey.toRSAKey().toRSAPublicKey();
-                } catch (JOSEException e) {
-                    log.debug("Problem with getting RSA Public key from JWK. ", e.getCause());
-                    throw new IllegalStateException("Failed to parse public key", e);
-                }
-            }));
+                .filter(jwkKey -> {
+                    KeyUse keyUse = jwkKey.getKeyUse();
+                    KeyType keyType = jwkKey.getKeyType();
+                    return keyUse != null && keyType != null && "sig".equals(keyUse.getValue())
+                            && "RSA".equals(keyType.getValue());
+                })
+                .collect(Collectors.toMap(JWK::getKeyID, jwkKey -> {
+                    try {
+                        return jwkKey.toRSAKey().toRSAPublicKey();
+                    } catch (JOSEException e) {
+                        log.debug("Problem with getting RSA Public key from JWK. ", e.getCause());
+                        throw new IllegalStateException("Failed to parse public key", e);
+                    }
+                }));
     }
 
     @Override
@@ -134,6 +148,29 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
         }
     }
 
+    private RSAPublicKey loadRSAPublicKey() {
+        try {
+            log.debug("RSA public key", jwksPublicKeyURL);
+            String pemContent = Files.readString(Paths.get(jwksPublicKeyURL));
+            String cleanedPem = pemContent
+                    .replace("-----BEGIN PUBLIC KEY-----", "")
+                    .replace("-----END PUBLIC KEY-----", "")
+                    .replaceAll("\\s+", "");
+
+            byte[] decoded = Base64.getDecoder().decode(cleanedPem);
+            X509EncodedKeySpec keySpec = new X509EncodedKeySpec(decoded);
+            KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+            return (RSAPublicKey) keyFactory.generatePublic(keySpec);
+
+        } catch (InvalidKeySpecException ex) {
+            log.error("Invalid key spec: {}", ex.getMessage(), ex);
+            throw new IllegalArgumentException("Invalid RSA public key specification", ex);
+        } catch (Exception ex) {
+            log.error("Error loading RSA public key: {}", ex.getMessage(), ex);
+            throw new RuntimeException("Failed to load RSA public key", ex);
+        }
+    }
+
     Claims getClaims(String token) {
         if (jwkSet == null || jwkSet.isEmpty()) {
             fetchJWKSet();
@@ -143,12 +180,21 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
             throw new JwtException("Empty string provided instead of a token.");
         }
 
+        if (jwksBypass && !StringUtils.isBlank(jwksPublicKeyURL)) {
+            log.debug("JWKS bypass: {}, public key {}", jwksBypass, jwksPublicKeyURL);
+            return Jwts.parser()
+                    .verifyWith(loadRSAPublicKey())
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload();
+        }
         return Jwts.parser()
-            .clock(clock)
-            .keyLocator(keyLocator)
-            .build()
-            .parseSignedClaims(token)
-            .getPayload();
+                .clock(clock)
+                .keyLocator(keyLocator)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+
     }
 
     class LocatorAdapterKid extends LocatorAdapter<Key> {
@@ -160,17 +206,21 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
             }
             String kid = header.getKeyId();
             if (kid == null) {
-                throw new UnsupportedKeyException("Token does not provide kid. It uses an unsupported type of signature.");
+                throw new UnsupportedKeyException(
+                        "Token does not provide kid. It uses an unsupported type of signature.");
             }
             return Optional.ofNullable(jwkSet.getKeyByKeyId(header.getKeyId()))
-                .map(key -> {
-                    try {
-                        return key.toRSAKey().toPublicKey();
-                    } catch (JOSEException e) {
-                        throw new JwtException("Could not validate the token due to either an invalid token or an invalid public key.", e);
-                    }
-                })
-                .orElseThrow(() -> new UnsupportedKeyException("Key with id " + header.getKeyId() + " is null in JWK"));
+                    .map(key -> {
+                        try {
+                            return key.toRSAKey().toPublicKey();
+                        } catch (JOSEException e) {
+                            throw new JwtException(
+                                    "Could not validate the token due to either an invalid token or an invalid public key.",
+                                    e);
+                        }
+                    })
+                    .orElseThrow(
+                            () -> new UnsupportedKeyException("Key with id " + header.getKeyId() + " is null in JWK"));
         }
 
     }

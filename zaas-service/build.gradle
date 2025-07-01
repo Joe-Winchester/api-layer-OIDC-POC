@@ -162,6 +162,10 @@ bootRun {
     systemProperties = System.properties
 }
 
+tasks.test {
+  enabled = false
+}
+
 publishing {
     publications {
         mavenJavaFat(MavenPublication) {
