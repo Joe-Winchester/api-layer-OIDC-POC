@@ -40,6 +40,7 @@ import org.zowe.apiml.security.common.token.OIDCProvider;
 
 import java.io.IOException;
 import java.net.URL;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.security.Key;
@@ -92,6 +93,8 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
     private final Map<String, PublicKey> publicKeys = new ConcurrentHashMap<>();
     @Getter
     private JWKSet jwkSet;
+    @Getter
+    private RSAPublicKey jwtPublicKey;
 
     @PostConstruct
     public void afterPropertiesSet() {
@@ -104,6 +107,11 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
     void fetchJWKSet() {
         if (StringUtils.isBlank(jwksUri)) {
             log.debug("OIDC JWK URI not provided, JWK refresh not performed");
+
+            if (StringUtils.isBlank(jwtPublicKey)) {
+                log.debug("OIDC JWK loading the public key, JWK refresh not performed");
+                jwtPublicKey = loadRSAPublicKey();
+            }
             return;
         }
         log.debug("Refreshing JWK endpoints {}", jwksUri);
@@ -150,8 +158,11 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
 
     private RSAPublicKey loadRSAPublicKey() {
         try {
-            log.debug("RSA public key", jwksPublicKeyURL);
-            String pemContent = Files.readString(Paths.get(jwksPublicKeyURL));
+            log.debug("RSA public key {}", jwksPublicKeyURL);
+
+            String defaultFileEncoding = System.getProperty("file.encoding");
+            Charset encoding = Charset.forName(defaultFileEncoding);
+            String pemContent = Files.readString(Paths.get(jwksPublicKeyURL), encoding);
             String cleanedPem = pemContent
                     .replace("-----BEGIN PUBLIC KEY-----", "")
                     .replace("-----END PUBLIC KEY-----", "")
@@ -183,7 +194,7 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
         if (jwksBypass && !StringUtils.isBlank(jwksPublicKeyURL)) {
             log.debug("JWKS bypass: {}, public key {}", jwksBypass, jwksPublicKeyURL);
             return Jwts.parser()
-                    .verifyWith(loadRSAPublicKey())
+                    .verifyWith(jwtPublicKey)
                     .build()
                     .parseSignedClaims(token)
                     .getPayload();
