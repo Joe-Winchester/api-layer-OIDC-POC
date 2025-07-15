@@ -81,9 +81,6 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
     @Qualifier("oidcJwtClock")
     private final Clock clock;
 
-    @Value("${apiml.security.oidc.jwks.bypass:false}")
-    Boolean jwksBypass;
-
     @Value("${apiml.security.oidc.jwks.publicKeyUrl}")
     String jwksPublicKeyURL;
 
@@ -109,8 +106,8 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
         if (StringUtils.isBlank(jwksUri)) {
             log.debug("OIDC JWK URI not provided, JWK refresh not performed");
 
-            if (jwtPublicKey != null) {
-                log.debug("OIDC JWK loading the public key, JWK refresh not performed");
+            if (jwtPublicKey == null) {
+                log.info("OIDC JWK loading the public key, JWK refresh not performed");
                 jwtPublicKey = loadRSAPublicKey();
             }
             return;
@@ -159,7 +156,7 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
 
     private RSAPublicKey loadRSAPublicKey() {
         try {
-            log.debug("RSA public key {}", jwksPublicKeyURL);
+            log.info("Loading JWK RSA public key url: {}", jwksPublicKeyURL);
 
             String defaultFileEncoding = System.getProperty("file.encoding");
             Charset encoding = Charset.forName(defaultFileEncoding);
@@ -192,20 +189,23 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
             throw new JwtException("Empty string provided instead of a token.");
         }
 
-        if (jwksBypass && !StringUtils.isBlank(jwksPublicKeyURL)) {
-            log.debug("JWKS bypass: {}, public key {}", jwksBypass, jwksPublicKeyURL);
+        if (!StringUtils.isBlank(jwksPublicKeyURL)) {
+            log.debug("JWKS validating with public key: {}", jwksPublicKeyURL);
             return Jwts.parser()
+                    .clock(clock)
                     .verifyWith(jwtPublicKey)
                     .build()
                     .parseSignedClaims(token)
                     .getPayload();
+        } else {
+            log.debug("JWKS validating with JWKS URL: {}", jwksUri);
+            return Jwts.parser()
+                    .clock(clock)
+                    .keyLocator(keyLocator)
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload();
         }
-        return Jwts.parser()
-                .clock(clock)
-                .keyLocator(keyLocator)
-                .build()
-                .parseSignedClaims(token)
-                .getPayload();
 
     }
 
