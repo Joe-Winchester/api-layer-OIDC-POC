@@ -93,6 +93,7 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
     private final Map<String, PublicKey> publicKeys = new ConcurrentHashMap<>();
     @Getter
     private JWKSet jwkSet;
+
     @Getter
     private RSAPublicKey jwtPublicKey;
 
@@ -108,7 +109,7 @@ public class OIDCTokenProviderJWK implements OIDCProvider {
         if (StringUtils.isBlank(jwksUri)) {
             log.debug("OIDC JWK URI not provided, JWK refresh not performed");
 
-            if (StringUtils.isBlank(jwtPublicKey)) {
+            if (jwtPublicKey != null) {
                 log.debug("OIDC JWK loading the public key, JWK refresh not performed");
                 jwtPublicKey = loadRSAPublicKey();
             }
