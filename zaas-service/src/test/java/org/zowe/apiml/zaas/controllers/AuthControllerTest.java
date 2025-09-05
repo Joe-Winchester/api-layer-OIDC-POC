@@ -87,7 +87,7 @@ class AuthControllerTest {
     @BeforeEach
     void setUp() throws ParseException, JSONException {
         messageService = new YamlMessageService("/zaas-log-messages.yml");
-        authController = new AuthController(authenticationService, jwtSecurity, zosmfService, messageService, tokenProvider, oidcProvider, webFingerProvider);
+        authController = new AuthController(authenticationService, jwtSecurity, zosmfService, messageService, tokenProvider, null, oidcProvider, webFingerProvider);
         mockMvc = MockMvcBuilders.standaloneSetup(authController).build();
         body = new JSONObject()
             .put("token", "token")
