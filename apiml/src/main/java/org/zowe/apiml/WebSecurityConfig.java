@@ -68,6 +68,7 @@ public class WebSecurityConfig {
     private static final String CONFORMANCE_LONG_URL = CONTEXT_PATH + "/api/v1" + "/conformance/**";
     private static final String VALIDATE_SHORT_URL = "gateway/validate";
     private static final String VALIDATE_LONG_URL = "gateway/api/v1/validate";
+    private static final String VALIDATE_JWT_URL = "gateway/api/v1/auth/jwt/passticket";
     private static final String APPLICATION_HEALTH = "/application/health";
     private static final String APPLICATION_INFO = "/application/info";
 
@@ -525,6 +526,7 @@ public class WebSecurityConfig {
                 CONFORMANCE_SHORT_URL,
                 CONFORMANCE_LONG_URL,
                 VALIDATE_SHORT_URL,
+                VALIDATE_JWT_URL,
                 VALIDATE_LONG_URL
             ))
             .authorizeExchange(authorizeExchangeSpec ->

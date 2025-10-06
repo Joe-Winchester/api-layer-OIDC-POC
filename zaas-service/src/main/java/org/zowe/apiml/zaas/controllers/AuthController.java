@@ -16,6 +16,9 @@ import com.fasterxml.jackson.databind.ObjectWriter;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jose.jwk.JWKSet;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
 import io.swagger.v3.oas.annotations.Hidden;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -26,11 +29,17 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.util.Strings;
 import org.bouncycastle.util.io.pem.PemObject;
+import org.bouncycastle.util.io.pem.PemReader;
 import org.bouncycastle.util.io.pem.PemWriter;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -40,27 +49,34 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.zowe.apiml.message.api.ApiMessageView;
 import org.zowe.apiml.message.core.MessageService;
-import org.zowe.apiml.passticket.PassTicketService;
 import org.zowe.apiml.security.common.token.AccessTokenProvider;
 import org.zowe.apiml.security.common.token.OIDCProvider;
 import org.zowe.apiml.security.common.token.TokenNotValidException;
 import org.zowe.apiml.zaas.security.service.AuthenticationService;
 import org.zowe.apiml.zaas.security.service.JwtSecurity;
-import org.zowe.apiml.zaas.security.service.schema.source.AuthSource;
 import org.zowe.apiml.zaas.security.service.token.OIDCTokenProviderJWK;
 import org.zowe.apiml.zaas.security.service.zosmf.ZosmfService;
 import org.zowe.apiml.zaas.security.webfinger.WebFingerProvider;
 import org.zowe.apiml.zaas.security.webfinger.WebFingerResponse;
+import org.zowe.commons.usermap.MapperResponse;
+import org.zowe.apiml.passticket.PassTicketService;
+import org.zowe.apiml.zaas.security.mapping.NativeMapperWrapper;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 
 import static org.apache.http.HttpStatus.*;
-
-import static org.zowe.apiml.zaas.zaas.ExtractAuthSourceFilter.AUTH_SOURCE_ATTR;
-import static org.zowe.apiml.zaas.zaas.ExtractAuthSourceFilter.AUTH_SOURCE_PARSED_ATTR;
 
 /**
  * Controller offer method to control security. It can contain method for user
@@ -75,12 +91,16 @@ public class AuthController {
 
     private final AuthenticationService authenticationService;
 
+    @Value("${apiml.security.oidc.registry:}")
+    protected String registry;
+
     private final JwtSecurity jwtSecurity;
     private final ZosmfService zosmfService;
     private final MessageService messageService;
 
     private final AccessTokenProvider tokenProvider;
     private final PassTicketService passTicketService;
+    private final NativeMapperWrapper nativeMapper;
 
     @Nullable
     private final OIDCProvider oidcProvider;
@@ -88,6 +108,10 @@ public class AuthController {
 
     private static final String TOKEN_KEY = "token";
     private static final ObjectWriter writer = new ObjectMapper().writer();
+
+    private static final String AUTHZ_ID = "wxa4z:authorization:service";
+    private static final String AUTHZ_SECRET = "fJKVZgLQNaz9EPa2z7Ukx9oqw4Csm7zP";
+    private static final String TOKEN_EXCHANGE_CERTS = "/var/lpp/zowe/v3.2/instance/token_exchange_certs/";
 
     public static final String CONTROLLER_PATH = "/zaas/api/v1/auth"; // NOSONAR: URL is always using / to separate path
                                                                       // segments
@@ -103,30 +127,54 @@ public class AuthController {
     public static final String OIDC_TOKEN_VALIDATE = "/oidc-token/validate"; // NOSONAR
     public static final String OIDC_WEBFINGER_PATH = "/oidc/webfinger";
 
-    @GetMapping(value = "/passticket")
-    @Operation(description = "Generate ZOS passticket", security = {
-            @SecurityRequirement(name = "Bearer")
-    })
-    public ResponseEntity<Map<String, String>> createPassTicket(@RequestParam String applID,
-            @RequestAttribute(AUTH_SOURCE_ATTR) AuthSource authSource,
-            @RequestAttribute(AUTH_SOURCE_PARSED_ATTR) AuthSource.Parsed authSourceParsed) {
+    @PostMapping(value = "/jwt/passticket", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(description = "Generate ZOS passticket", tags = { "Token Exchange" })
+    public ResponseEntity<TokenExchangePTKResponseModel> getPassTicket(@RequestBody TokenExchangePTKRequestModel req,
+            @RequestHeader("Authorization") String authorize) throws Exception {
+        log.info("GTM : Getting Request Body ==> {} ", req);
+        log.info("GTM : Getting Request Headers ==> {} ", authorize);
+        String applID = req.getAppl_id();
+        String emailID = req.getEmail_id();
 
-        try {
-            String userId = SecurityContextHolder.getContext().getAuthentication().getPrincipal().toString();
-            log.info("GTM : Getting user_ID ==> {} ",userId);
-            String zosUserId = authSourceParsed.getUserId();
-            log.info("GTM : Getting ZOS_User_id ==> {} ",userId);
-            var ticket = passTicketService.generate(zosUserId, applID);
-            log.info("GTM : Getting user_ID ==> {} and  ZOS_User_id ==> {}", userId, zosUserId);
-            Map<String, String> result = new HashMap<>();
-            result.put("userID", userId);
-            result.put("ZOS_UserID", zosUserId);
-            result.put("ZOS_Passticket", ticket);
-            return ResponseEntity.ok(result);
-        } catch (Exception ex) {
-            log.error("GTM: Error calling jwt passticket api", ex);
-            return ResponseEntity.internalServerError().build();
+        if (Strings.isBlank(emailID) || Strings.isBlank(applID)) {
+            return ResponseEntity.badRequest().build();
         }
+
+        if (tokenExchangeTokenValidation(authorize, emailID)) {
+            String zosUserId = "";
+            log.info("GTM : Getting user_ID ==> {} ", emailID);
+            try {
+                MapperResponse response = nativeMapper.getUserIDForDN(emailID, registry);
+                if (response.getRc() == 0 && StringUtils.isNotEmpty(response.getUserId())) {
+                    zosUserId = response.getUserId();
+                }
+                log.info("GTM : Getting ZOS_User_id ==> {} ", zosUserId);
+                var ticket = passTicketService.generate(zosUserId, applID);
+                log.info("GTM : Getting user_ID ==> {} and  ZOS_User_id ==> {}", emailID, zosUserId);
+                return ResponseEntity.ok(new TokenExchangePTKResponseModel(zosUserId, ticket, "passticket", emailID));
+            } catch (Exception ex) {
+                log.error("GTM: Error calling jwt passticket api", ex);
+                return ResponseEntity.internalServerError().build();
+            }
+        }
+        log.info("GTM : Invalid jwt token ==> {} ", authorize);
+        return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
+
+    }
+
+    @PostMapping(value = "/jwt/passticket/token", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(description = "Generate ZOS Token for passticket", tags = { "Token Exchange" })
+    public ResponseEntity<String> generateToken(@RequestHeader("Authorization") String authorize,
+            @RequestBody TokenExchangeRequestModel req) {
+        String email = req.getEmail();
+        log.info("GTM : Getting Request Param ==> {} ", req);
+        log.info("GTM : Getting Request Headers ==> {} ", authorize);
+
+        if (tokenExchangevalidateRequest(authorize)) {
+            String jwt = tokenExchangeJWT(email);
+            return ResponseEntity.ok(jwt);
+        }
+        return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
     }
 
     @DeleteMapping(path = INVALIDATE_PATH)
@@ -489,6 +537,96 @@ public class AuthController {
         return new ResponseEntity<>(writer.writeValueAsString(message), HttpStatus.BAD_REQUEST);
     }
 
+    private boolean tokenExchangevalidateRequest(String token) {
+        try {
+            log.info("GTM : Received token: {}", token);
+            String authToken = AUTHZ_ID + ":" + AUTHZ_SECRET;
+            String decodeToken = new String(Base64.getDecoder().decode(token), StandardCharsets.UTF_8);
+            return decodeToken.equals(authToken);
+        } catch (IllegalArgumentException e) {
+            log.error("GTM : Failed to decode or parse token: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private String tokenExchangeJWT(String email) {
+        Date now = new Date();
+        Map<String, Object> claims = new HashMap<>();
+        try {
+            Date expiry = new Date(now.getTime() + 3600_000);
+            claims.put("username", email);
+            claims.put("email", email);
+            claims.put("role", "ADK");
+            claims.put("authz_id", AUTHZ_ID);
+            claims.put("iss", "ZOWE_TOKEN_EXCHANGE");
+            String token = Jwts.builder()
+                    .claims(claims)
+                    .subject(email)
+                    .issuedAt(now)
+                    .signWith(jwtLoadPrivateKey())
+                    .expiration(expiry).compact();
+            return token;
+        } catch (IllegalArgumentException e) {
+            log.error("GTM : Failed to decode or parse token: {}", e.getMessage());
+            throw e;
+        }
+    }
+
+    private PrivateKey jwtLoadPrivateKey() {
+        try {
+            // Replace with your actual file path
+            File pemFile = new File(TOKEN_EXCHANGE_CERTS + "token_exchange_pk.pem");
+            try (InputStream inputStream = new FileInputStream(pemFile)) {
+                String keyContent = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8)
+                        .replace("-----BEGIN PRIVATE KEY-----", "")
+                        .replace("-----END PRIVATE KEY-----", "")
+                        .replaceAll("\\s+", "");
+
+                byte[] keyBytes = Base64.getDecoder().decode(keyContent);
+                PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(keyBytes);
+                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+
+                return keyFactory.generatePrivate(keySpec);
+            }
+        } catch (Exception e) {
+            log.error("GTM : Failed to load private key: {}", e.getMessage(), e);
+            throw new IllegalArgumentException("Invalid private key format", e);
+        }
+    }
+
+    private PublicKey jwtloadPublicKey() throws Exception {
+        try (PemReader pemReader = new PemReader(new FileReader(TOKEN_EXCHANGE_CERTS + "token_exchange_public.pem"))) {
+            byte[] content = pemReader.readPemObject().getContent();
+            X509EncodedKeySpec keySpec = new X509EncodedKeySpec(content);
+            KeyFactory kf = KeyFactory.getInstance("RSA");
+            return kf.generatePublic(keySpec);
+        }
+    }
+
+    private boolean tokenExchangeTokenValidation(String jwt, String email) throws Exception {
+        // Without Signing Key
+        // Claims claims =
+        // (Claims)Jwts.parser().unsecured().build().parse(jwt).getPayload();
+
+        // With Signing Key
+        Claims claims = (Claims) Jwts.parser()
+                .verifyWith(jwtloadPublicKey())
+                // .unsecured() // To validate without the key
+                .build()
+                .parse(jwt)
+                .getPayload();
+        log.info("GTM : Get Claims Value", claims.values());
+        if (!email.equals(claims.getSubject())) {
+            log.info("GTM : Email is mismatch {} ==> {}", email, claims.getSubject());
+            return false;
+        }
+        if (claims.getExpiration().before(new Date())) {
+            log.info("GTM : Token Expired !!! ==> {}", claims.getExpiration());
+            return false;
+        }
+        return true;
+    }
+
     @Data
     public static class ValidateRequestModel {
         private String token;
@@ -500,6 +638,26 @@ public class AuthController {
         private String serviceId;
         private String userId;
         private long timestamp;
+    }
+
+    @Data
+    public static class TokenExchangePTKRequestModel {
+        private String appl_id;
+        private String email_id;
+    }
+
+    @Data
+    @Builder
+    public static class TokenExchangePTKResponseModel {
+        private String zos_userid;
+        private String token;
+        private String token_type;
+        private String email;
+    }
+
+    @Data
+    public static class TokenExchangeRequestModel {
+        private String email;
     }
 
 }

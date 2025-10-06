@@ -110,6 +110,8 @@ public class WebSecurity {
     public static final String CONFORMANCE_LONG_URL = CONTEXT_PATH + "/api/v1" + "/conformance/**";
     public static final String VALIDATE_SHORT_URL = "gateway/validate";
     public static final String VALIDATE_LONG_URL = "gateway/api/v1/validate";
+    public static final String JWT_GATEWAY_LONG_URL = "gateway/api/v1/auth/jwt/passticket";
+    public static final String JWT_GATEWAY_SORT_URL = "gateway/passticket";
     public static final String COOKIE_NONCE = "oidc_nonce";
     public static final String COOKIE_STATE = "oidc_state";
     public static final String COOKIE_RETURN_URL = "oidc_return_url";
@@ -373,6 +375,11 @@ public class WebSecurity {
                 VALIDATE_LONG_URL,
                 "/application/**"
             ))
+            .authorizeExchange(authorizeExchangeSpec -> {
+                authorizeExchangeSpec
+                .pathMatchers("gateway/api/v1/auth/jwt/passticket/token","gateway/api/v1/auth/jwt/passticket")
+                .permitAll();
+            })
             .authorizeExchange(authorizeExchangeSpec -> {
                     if (!isHealthEndpointProtected) {
                         authorizeExchangeSpec
