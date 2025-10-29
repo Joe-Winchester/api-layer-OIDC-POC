@@ -124,6 +124,7 @@ public class WebSecurity {
     public static final String OAUTH_2_AUTHORIZATION_URI = CONTEXT_PATH + "/oauth2/authorization/{registrationId}";
     public static final String OAUTH_2_REDIRECT_URI = CONTEXT_PATH + "/login/oauth2/code/**";
     public static final String OAUTH_2_REDIRECT_LOGIN_URI = CONTEXT_PATH + "/login/oauth2/code/{registrationId}";
+    public static final String STS_PASSTICKET_URL = "/gateway/api/v1/auth/delegations/passticket";
 
     @Value("${apiml.security.oidc.cookie.sameSite:Lax}")
     public String sameSite;
@@ -373,6 +374,7 @@ public class WebSecurity {
                 CONFORMANCE_LONG_URL,
                 VALIDATE_SHORT_URL,
                 VALIDATE_LONG_URL,
+                STS_PASSTICKET_URL,
                 "/application/**"
             ))
             .authorizeExchange(authorizeExchangeSpec -> {
